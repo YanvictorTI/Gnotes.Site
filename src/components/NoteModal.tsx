@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { X, Save, Plus, ListTodo, Clock, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, Save, Plus, ListTodo, Clock, CheckCircle2, PauseCircle } from 'lucide-react';
 import { Note, NoteStatus, COLUMNS, normalizeStatus } from '../types/note';
 
 interface NoteModalProps {
@@ -19,9 +19,11 @@ export const NoteModal: React.FC<NoteModalProps> = ({
 }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [descriptionLength, setDescriptionLength] = useState(0);
   const [status, setStatus] = useState<NoteStatus>(defaultStatus);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const descriptionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (initialNote) {
@@ -34,6 +36,7 @@ export const NoteModal: React.FC<NoteModalProps> = ({
       setStatus(defaultStatus);
     }
     setError(null);
+    setDescriptionLength(initialNote?.description?.replace(/<[^>]*>/g, '').length || 0);
   }, [initialNote, defaultStatus, isOpen]);
 
   // Keyboard shortcut: Ctrl + Enter to submit, Esc to close
@@ -66,7 +69,9 @@ export const NoteModal: React.FC<NoteModalProps> = ({
       return;
     }
 
-    if (description.length > 2000) {
+    const editorHtml = descriptionRef.current?.innerHTML || '';
+    const plainDescription = descriptionRef.current?.innerText.trim() || '';
+    if (plainDescription.length > 2000) {
       setError('A descrição deve ter no máximo 2000 caracteres.');
       return;
     }
@@ -76,7 +81,7 @@ export const NoteModal: React.FC<NoteModalProps> = ({
       setError(null);
       await onSave({
         title: trimmedTitle,
-        description: description.trim() || undefined,
+        description: editorHtml || undefined,
         status,
       });
       onClose();
@@ -87,6 +92,47 @@ export const NoteModal: React.FC<NoteModalProps> = ({
     }
   };
 
+  const handleImageFile = (file?: File) => {
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setError('Selecione um arquivo de imagem válido.');
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setError('A imagem deve ter no máximo 5 MB.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const imageDataUrl = typeof reader.result === 'string' ? reader.result : null;
+      if (!imageDataUrl || !descriptionRef.current) {
+        setError('Não foi possível inserir a imagem na descrição.');
+        return;
+      }
+
+      descriptionRef.current.focus();
+      document.execCommand('insertImage', false, imageDataUrl);
+      setDescriptionLength(descriptionRef.current.innerText.length);
+      setError(null);
+    };
+    reader.onerror = () => setError('Não foi possível carregar a imagem.');
+    reader.readAsDataURL(file);
+  };
+
+  const handleDescriptionDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  };
+
+  const handleDescriptionDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    handleImageFile(event.dataTransfer.files?.[0]);
+  };
+
   const getStatusIcon = (colId: NoteStatus) => {
     switch (colId) {
       case NoteStatus.Todo:
@@ -95,13 +141,15 @@ export const NoteModal: React.FC<NoteModalProps> = ({
         return <Clock className="w-4 h-4" />;
       case NoteStatus.Done:
         return <CheckCircle2 className="w-4 h-4" />;
+      case NoteStatus.Waiting:
+        return <PauseCircle className="w-4 h-4" />;
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
       <div 
-        className="w-full max-w-lg rounded-3xl glass-panel border border-slate-700/80 bg-slate-900 shadow-2xl overflow-hidden animate-slide-up"
+        className="w-full max-w-3xl max-h-[92vh] rounded-2xl glass-panel border border-slate-700/80 bg-slate-900 shadow-2xl overflow-y-auto animate-slide-up"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
@@ -128,7 +176,7 @@ export const NoteModal: React.FC<NoteModalProps> = ({
         </div>
 
         {/* Modal Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="p-6 sm:p-8 space-y-6">
           {error && (
             <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs font-medium">
               {error}
@@ -148,7 +196,7 @@ export const NoteModal: React.FC<NoteModalProps> = ({
               autoFocus
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              placeholder="Ex.: Desenvolver endpoints do backend..."
+              placeholder="Ex.: Planejar a próxima entrega..."
               maxLength={200}
               className="w-full px-4 py-2.5 rounded-xl bg-slate-950/70 border border-slate-700/80 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
             />
@@ -160,15 +208,18 @@ export const NoteModal: React.FC<NoteModalProps> = ({
               <label className="font-semibold text-slate-300">
                 Descrição <span className="text-slate-400 font-normal">(opcional)</span>
               </label>
-              <span className="text-slate-400">{description.length}/2000</span>
+              <span className="text-slate-400">{descriptionLength}/2000</span>
             </div>
-            <textarea
-              rows={4}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Adicione notas, links, checklists ou especificações detalhadas..."
-              maxLength={2000}
-              className="w-full px-4 py-2.5 rounded-xl bg-slate-950/70 border border-slate-700/80 text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all resize-y"
+            <div
+              ref={descriptionRef}
+              contentEditable
+              suppressContentEditableWarning
+              onInput={(event) => setDescriptionLength(event.currentTarget.innerText.length)}
+              onDragOver={handleDescriptionDragOver}
+              onDrop={handleDescriptionDrop}
+              dangerouslySetInnerHTML={{ __html: description }}
+              data-placeholder="Digite a descrição ou arraste uma imagem para este campo..."
+              className="min-h-56 w-full overflow-y-auto rounded-xl border border-slate-700/80 bg-slate-950/70 px-4 py-3 text-base leading-relaxed text-slate-100 outline-none transition-all empty:before:pointer-events-none empty:before:text-slate-400 empty:before:content-[attr(data-placeholder)] focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500"
             />
           </div>
 

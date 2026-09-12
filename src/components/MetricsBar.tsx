@@ -1,5 +1,5 @@
 import React from 'react';
-import { ListTodo, Clock, CheckCircle2, Layers } from 'lucide-react';
+import { ListTodo, Clock, CheckCircle2, PauseCircle, Layers } from 'lucide-react';
 import { Note, NoteStatus, normalizeStatus } from '../types/note';
 
 interface MetricsBarProps {
@@ -17,6 +17,7 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
   const todoCount = notes.filter(n => normalizeStatus(n.status) === NoteStatus.Todo).length;
   const inProgressCount = notes.filter(n => normalizeStatus(n.status) === NoteStatus.InProgress).length;
   const doneCount = notes.filter(n => normalizeStatus(n.status) === NoteStatus.Done).length;
+  const waitingCount = notes.filter(n => normalizeStatus(n.status) === NoteStatus.Waiting).length;
 
   const completionRate = total > 0 ? Math.round((doneCount / total) * 100) : 0;
 
@@ -60,13 +61,23 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
       activeBg: 'bg-emerald-950/50 border-emerald-500/50',
       progressColor: 'bg-emerald-500',
       subtext: `${completionRate}% concluído`
+    },
+    {
+      id: NoteStatus.Waiting,
+      label: 'Em Espera',
+      count: waitingCount,
+      icon: PauseCircle,
+      color: 'text-sky-400',
+      activeBg: 'bg-sky-950/50 border-sky-500/50',
+      progressColor: 'bg-sky-500',
+      subtext: `${total ? Math.round((waitingCount / total) * 100) : 0}% do total`
     }
   ];
 
   return (
     <div className="space-y-4">
       {/* Metrics Cards Grid */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
         {items.map((item) => {
           const Icon = item.icon;
           const isSelected = selectedFilter === item.id;
@@ -75,7 +86,7 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
             <button
               key={item.label}
               onClick={() => onSelectFilter(item.id)}
-              className={`p-4 rounded-2xl border text-left transition-all relative overflow-hidden group ${
+              className={`p-4 rounded-xl border text-left transition-all relative overflow-hidden group ${
                 isSelected 
                   ? `${item.activeBg} shadow-lg ring-1 ring-indigo-500/30` 
                   : 'bg-slate-900/50 border-slate-800/80 hover:bg-slate-900/80 hover:border-slate-700'
@@ -104,7 +115,7 @@ export const MetricsBar: React.FC<MetricsBarProps> = ({
       </div>
 
       {/* Progress Bar of Completion */}
-      <div className="p-3.5 rounded-2xl bg-slate-900/40 border border-slate-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+      <div className="p-3.5 rounded-xl bg-slate-900/40 border border-slate-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
         <div className="flex items-center gap-3">
           <span className="font-semibold text-slate-300">Progresso Geral:</span>
           <div className="flex items-center gap-1.5">

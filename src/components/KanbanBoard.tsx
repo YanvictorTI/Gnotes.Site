@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
-import { 
-  Plus, 
-  ListTodo, 
-  Clock, 
-  CheckCircle2, 
-  Inbox 
+import React, { useCallback, useRef, useState } from 'react';
+import {
+  Plus,
+  ListTodo,
+  Clock,
+  CheckCircle2,
+  PauseCircle,
+  Inbox
 } from 'lucide-react';
 import { Note, NoteStatus, COLUMNS, normalizeStatus } from '../types/note';
 import { NoteCard } from './NoteCard';
@@ -24,8 +25,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   onMoveNoteStatus,
   onQuickAdd,
 }) => {
-  const [draggedNote, setDraggedNote] = useState<Note | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<NoteStatus | null>(null);
+  const draggedNoteRef = useRef<Note | null>(null);
+  const dragOverColumnRef = useRef<NoteStatus | null>(null);
 
   const getColumnIcon = (iconName: string) => {
     switch (iconName) {
@@ -35,47 +37,56 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
         return <Clock className="w-4 h-4 text-amber-400" />;
       case 'CheckCircle2':
         return <CheckCircle2 className="w-4 h-4 text-emerald-400" />;
+      case 'PauseCircle':
+        return <PauseCircle className="w-4 h-4 text-sky-400" />;
       default:
         return <ListTodo className="w-4 h-4 text-indigo-400" />;
     }
   };
 
-  const handleDragStart = (e: React.DragEvent, note: Note) => {
-    setDraggedNote(note);
+  const handleDragStart = useCallback((e: React.DragEvent, note: Note) => {
+    draggedNoteRef.current = note;
     e.dataTransfer.setData('text/plain', note.id);
     e.dataTransfer.effectAllowed = 'move';
-  };
+  }, []);
 
-  const handleDragEnd = () => {
-    setDraggedNote(null);
+  const handleDragEnd = useCallback(() => {
+    draggedNoteRef.current = null;
+    dragOverColumnRef.current = null;
     setDragOverColumn(null);
-  };
+  }, []);
 
-  const handleDragOver = (e: React.DragEvent, status: NoteStatus) => {
+  const handleDragOver = useCallback((e: React.DragEvent, status: NoteStatus) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
-    if (dragOverColumn !== status) {
+    if (dragOverColumnRef.current !== status) {
+      dragOverColumnRef.current = status;
       setDragOverColumn(status);
     }
-  };
+  }, []);
 
-  const handleDragLeave = () => {
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    dragOverColumnRef.current = null;
     setDragOverColumn(null);
-  };
+  }, []);
 
-  const handleDrop = (e: React.DragEvent, targetStatus: NoteStatus) => {
+  const handleDrop = useCallback((e: React.DragEvent, targetStatus: NoteStatus) => {
     e.preventDefault();
+    e.stopPropagation();
+    const draggedNote = draggedNoteRef.current;
+    draggedNoteRef.current = null;
+    dragOverColumnRef.current = null;
     setDragOverColumn(null);
     if (!draggedNote) return;
 
     if (normalizeStatus(draggedNote.status) !== targetStatus) {
       onMoveNoteStatus(draggedNote, targetStatus);
     }
-    setDraggedNote(null);
-  };
+  }, [onMoveNoteStatus]);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+    <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 xl:gap-4 items-start">
       {COLUMNS.map((col) => {
         const columnNotes = notes.filter(n => normalizeStatus(n.status) === col.id);
         const isTarget = dragOverColumn === col.id;
@@ -86,9 +97,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
             onDragOver={(e) => handleDragOver(e, col.id)}
             onDragLeave={handleDragLeave}
             onDrop={(e) => handleDrop(e, col.id)}
-            className={`flex flex-col rounded-3xl border transition-all duration-200 min-h-[500px] ${
+            className={`flex flex-col rounded-2xl border transition-colors duration-75 min-h-[500px] ${
               isTarget 
-                ? 'bg-slate-900/90 border-indigo-500 ring-2 ring-indigo-500/30' 
+                ? 'bg-indigo-950/35 border-indigo-400 ring-2 ring-indigo-400/50 shadow-lg shadow-indigo-500/10' 
                 : 'bg-slate-900/40 border-slate-800/80'
             }`}
           >
@@ -124,9 +135,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
             </div>
 
             {/* Notes List / Column Body */}
-            <div className="p-4 flex-1 flex flex-col gap-3.5 overflow-y-auto max-h-[calc(100vh-280px)]">
+            <div className="p-3.5 sm:p-4 flex-1 flex flex-col gap-3 overflow-y-auto max-h-[calc(100vh-230px)]">
               {columnNotes.length === 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center py-12 px-4 text-center rounded-2xl border border-dashed border-slate-800/80 bg-slate-950/20">
+                <div className="flex-1 flex flex-col items-center justify-center py-12 px-4 text-center rounded-xl border border-dashed border-slate-800/80 bg-slate-950/20">
                   <div className="w-10 h-10 rounded-full bg-slate-900 flex items-center justify-center mb-3 text-slate-400 border border-slate-800">
                     <Inbox className="w-5 h-5" />
                   </div>
@@ -150,6 +161,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                     onMoveStatus={onMoveNoteStatus}
                     onDragStart={handleDragStart}
                     onDragEnd={handleDragEnd}
+                    hideImages={columnNotes.length > 1}
                   />
                 ))
               )}

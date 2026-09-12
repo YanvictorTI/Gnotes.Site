@@ -36,7 +36,7 @@ export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onDismis
         return (
           <div
             key={toast.id}
-            className={`pointer-events-auto p-4 rounded-2xl border shadow-2xl glass-panel flex items-start gap-3 animate-slide-up ${borderClass}`}
+            className={`pointer-events-auto p-4 rounded-xl border shadow-2xl glass-panel flex items-start gap-3 animate-slide-up ${borderClass}`}
           >
             <Icon className={`w-5 h-5 flex-shrink-0 mt-0.5 ${iconClass}`} />
             <div className="flex-1 min-w-0">

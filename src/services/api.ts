@@ -3,6 +3,7 @@ import { Note, CreateNoteRequest, UpdateNoteRequest, NoteStatus, normalizeStatus
 const DEFAULT_API_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5098';
 const STORAGE_KEY_API_URL = 'gnotes_api_url';
 const STORAGE_KEY_LOCAL_NOTES = 'gnotes_fallback_notes';
+const STORAGE_KEY_AUTH_TOKEN = 'gnotes_auth_token';
 
 export function getBaseUrl(): string {
   return localStorage.getItem(STORAGE_KEY_API_URL) || DEFAULT_API_URL;
@@ -15,6 +16,80 @@ export function setBaseUrl(url: string): void {
 
 export function resetBaseUrl(): void {
   localStorage.removeItem(STORAGE_KEY_API_URL);
+}
+
+export function getAccessToken(): string | null {
+  return localStorage.getItem(STORAGE_KEY_AUTH_TOKEN);
+}
+
+export function setAccessToken(token: string | null): void {
+  if (token) {
+    localStorage.setItem(STORAGE_KEY_AUTH_TOKEN, token);
+    return;
+  }
+
+  localStorage.removeItem(STORAGE_KEY_AUTH_TOKEN);
+}
+
+export function clearAuth(): void {
+  localStorage.removeItem(STORAGE_KEY_AUTH_TOKEN);
+}
+
+function getAuthHeaders(extraHeaders: HeadersInit = {}): HeadersInit {
+  const headers = new Headers(extraHeaders);
+  const token = getAccessToken();
+
+  headers.set('Accept', 'application/json');
+
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  return headers;
+}
+
+async function readApiPayload<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  if (!text) {
+    return {} as T;
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return text as unknown as T;
+  }
+}
+
+function getApiErrorMessage(payload: unknown, status: number): string {
+  if (typeof payload === 'string' && payload.trim()) {
+    return payload;
+  }
+
+  if (payload && typeof payload === 'object') {
+    const body = payload as {
+      message?: string;
+      title?: string;
+      detail?: string;
+      errors?: Record<string, string[]>;
+    };
+    const validationErrors = body.errors
+      ? Object.values(body.errors).flat().filter(Boolean).join(' ')
+      : '';
+
+    return validationErrors || body.message || body.detail || body.title || `HTTP ${status}`;
+  }
+
+  return `HTTP ${status}`;
+}
+
+async function throwApiError(response: Response): Promise<never> {
+  const payload = await readApiPayload<unknown>(response);
+  throw new Error(getApiErrorMessage(payload, response.status));
+}
+
+function isNetworkError(error: unknown): boolean {
+  return error instanceof TypeError || (error instanceof DOMException && error.name === 'AbortError');
 }
 
 // Initial mock notes if local storage is empty
@@ -68,6 +143,54 @@ export function getIsOffline(): boolean {
   return isBackendOffline;
 }
 
+export const authApi = {
+  async register(email: string, password: string): Promise<{ message: string }> {
+    const baseUrl = getBaseUrl();
+    const response = await fetch(`${baseUrl}/api/auth/register`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        email,
+        password,
+        confirmPassword: password
+      })
+    });
+
+    const payload = await readApiPayload<{ message?: string }>(response);
+
+    if (!response.ok) await throwApiError(response);
+
+    return { message: payload.message || 'Usuário registrado com sucesso.' };
+  },
+
+  async login(email: string, password: string): Promise<{ token: string; message?: string }> {
+    const baseUrl = getBaseUrl();
+    const response = await fetch(`${baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({ email, password })
+    });
+
+    const payload = await readApiPayload<{ accessToken?: string; token?: string; message?: string; tokenType?: string }>(response);
+
+    if (!response.ok) await throwApiError(response);
+
+    const token = payload.accessToken ?? payload.token;
+    if (!token) {
+      throw new Error('Resposta da API não retornou um token válido.');
+    }
+
+    setAccessToken(token);
+    return { token, message: payload.message || 'Login realizado com sucesso.' };
+  }
+};
+
 export const notesApi = {
   async checkConnection(): Promise<boolean> {
     const baseUrl = getBaseUrl();
@@ -75,9 +198,8 @@ export const notesApi = {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 2500);
 
-      const res = await fetch(`${baseUrl}/api/notes`, {
+      const res = await fetch(`${baseUrl}/api/health`, {
         method: 'GET',
-        headers: { 'Accept': 'application/json' },
         signal: controller.signal
       });
 
@@ -95,14 +217,19 @@ export const notesApi = {
     const baseUrl = getBaseUrl();
     try {
       const res = await fetch(`${baseUrl}/api/notes`, {
-        headers: { 'Accept': 'application/json' }
+        headers: getAuthHeaders()
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (res.status === 401) {
+        throw new Error('Sessão expirada. Faça login novamente.');
+      }
+
+      if (!res.ok) await throwApiError(res);
       const data: Note[] = await res.json();
       isBackendOffline = false;
       return { data, isOffline: false };
     } catch (err) {
+      if (!isNetworkError(err)) throw err;
       console.warn('[Gnotes API] Backend não acessível, usando armazenamento local sincronizado:', err);
       isBackendOffline = true;
       return { data: getLocalNotes(), isOffline: true };
@@ -112,11 +239,15 @@ export const notesApi = {
   async getById(id: string): Promise<Note | null> {
     const baseUrl = getBaseUrl();
     try {
-      const res = await fetch(`${baseUrl}/api/notes/${id}`);
+      const res = await fetch(`${baseUrl}/api/notes/${id}`, { headers: getAuthHeaders() });
+      if (res.status === 401) {
+        throw new Error('Sessão expirada. Faça login novamente.');
+      }
       if (res.status === 404) return null;
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) await throwApiError(res);
       return await res.json();
-    } catch {
+    } catch (err) {
+      if (!isNetworkError(err)) throw err;
       const local = getLocalNotes();
       return local.find(n => n.id === id) || null;
     }
@@ -125,10 +256,14 @@ export const notesApi = {
   async getByStatus(status: NoteStatus): Promise<Note[]> {
     const baseUrl = getBaseUrl();
     try {
-      const res = await fetch(`${baseUrl}/api/notes/status/${status}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await fetch(`${baseUrl}/api/notes/status/${status}`, { headers: getAuthHeaders() });
+      if (res.status === 401) {
+        throw new Error('Sessão expirada. Faça login novamente.');
+      }
+      if (!res.ok) await throwApiError(res);
       return await res.json();
-    } catch {
+    } catch (err) {
+      if (!isNetworkError(err)) throw err;
       const local = getLocalNotes();
       return local.filter(n => normalizeStatus(n.status) === status);
     }
@@ -141,28 +276,36 @@ export const notesApi = {
     try {
       const res = await fetch(`${baseUrl}/api/notes`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
+        headers: getAuthHeaders({
+          'Content-Type': 'application/json'
+        }),
         body: JSON.stringify({
           title: payload.title,
           description: payload.description || null,
+          imageDataUrl: payload.imageDataUrl || null,
+          imagePosition: payload.imagePosition ?? null,
           status: normalizedStatus
         })
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (res.status === 401) {
+        throw new Error('Sessão expirada. Faça login novamente.');
+      }
+
+      if (!res.ok) await throwApiError(res);
       const created: Note = await res.json();
       isBackendOffline = false;
       return created;
     } catch (err) {
+      if (!isNetworkError(err)) throw err;
       console.warn('[Gnotes API] Falha na criação remota, salvando localmente:', err);
       isBackendOffline = true;
       const newNote: Note = {
         id: crypto.randomUUID ? crypto.randomUUID() : `local-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
         title: payload.title,
         description: payload.description || null,
+        imageDataUrl: payload.imageDataUrl || null,
+        imagePosition: payload.imagePosition ?? null,
         status: normalizedStatus,
         createdAtUtc: new Date().toISOString(),
         updatedAtUtc: null
@@ -181,22 +324,28 @@ export const notesApi = {
     try {
       const res = await fetch(`${baseUrl}/api/notes/${id}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
+        headers: getAuthHeaders({
+          'Content-Type': 'application/json'
+        }),
         body: JSON.stringify({
           title: payload.title,
           description: payload.description || null,
+          imageDataUrl: payload.imageDataUrl || null,
+          imagePosition: payload.imagePosition ?? null,
           status: normalizedStatus
         })
       });
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (res.status === 401) {
+        throw new Error('Sessão expirada. Faça login novamente.');
+      }
+
+      if (!res.ok) await throwApiError(res);
       const updated: Note = await res.json();
       isBackendOffline = false;
       return updated;
     } catch (err) {
+      if (!isNetworkError(err)) throw err;
       console.warn('[Gnotes API] Falha no update remoto, atualizando localmente:', err);
       isBackendOffline = true;
       const list = getLocalNotes();
@@ -207,6 +356,8 @@ export const notesApi = {
         ...list[index],
         title: payload.title,
         description: payload.description || null,
+        imageDataUrl: payload.imageDataUrl || null,
+        imagePosition: payload.imagePosition ?? null,
         status: normalizedStatus,
         updatedAtUtc: new Date().toISOString()
       };
@@ -216,77 +367,64 @@ export const notesApi = {
     }
   },
 
-  async updateStatus(id: string, currentNote: Note, newStatus: NoteStatus): Promise<Note> {
+  async updateStatus(currentNote: Note, newStatus: NoteStatus): Promise<Note> {
     const baseUrl = getBaseUrl();
+    const id = currentNote.id;
 
-    // 1st attempt: PATCH /api/notes/{id}/status
     try {
       const patchRes = await fetch(`${baseUrl}/api/notes/${id}/status`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
+        headers: getAuthHeaders({
+          'Content-Type': 'application/json'
+        }),
         body: JSON.stringify({ status: newStatus })
       });
 
+      if (patchRes.status === 401) {
+        throw new Error('Sessão expirada. Faça login novamente.');
+      }
+
       if (patchRes.ok) {
         isBackendOffline = false;
-        return await patchRes.json();
+        const payload = await patchRes.json() as {
+          status: NoteStatus;
+          updatedAtUtc: string;
+        };
+        return {
+          ...currentNote,
+          status: normalizeStatus(payload.status),
+          updatedAtUtc: payload.updatedAtUtc
+        };
       }
-    } catch {
-      // Ignore and fallback to PUT
-    }
-
-    // 2nd attempt: PUT /api/notes/{id}
-    try {
-      const putRes = await fetch(`${baseUrl}/api/notes/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({
-          title: currentNote.title,
-          description: currentNote.description || null,
-          status: newStatus
-        })
-      });
-
-      if (putRes.ok) {
-        isBackendOffline = false;
-        return await putRes.json();
-      }
-      throw new Error(`HTTP ${putRes.status}`);
+      await throwApiError(patchRes);
     } catch (err) {
-      console.warn('[Gnotes API] Falha na troca de status remota, aplicando localmente:', err);
-      isBackendOffline = true;
-      const list = getLocalNotes();
-      const index = list.findIndex(n => n.id === id);
-      if (index === -1) throw new Error('Nota não encontrada');
-
-      const updatedNote: Note = {
-        ...list[index],
-        status: newStatus,
-        updatedAtUtc: new Date().toISOString()
-      };
-      list[index] = updatedNote;
-      saveLocalNotes(list);
-      return updatedNote;
+      if (!isNetworkError(err)) {
+        throw err;
+      }
     }
+
+    console.warn('[Gnotes API] Backend não acessível, status não atualizado.');
+    isBackendOffline = true;
+    throw new Error('Não foi possível atualizar o status. Tente novamente quando a conexão estiver disponível.');
   },
 
   async delete(id: string): Promise<boolean> {
     const baseUrl = getBaseUrl();
     try {
       const res = await fetch(`${baseUrl}/api/notes/${id}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: getAuthHeaders()
       });
 
-      if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+      if (res.status === 401) {
+        throw new Error('Sessão expirada. Faça login novamente.');
+      }
+
+      if (!res.ok && res.status !== 404) await throwApiError(res);
       isBackendOffline = false;
       return true;
     } catch (err) {
+      if (!isNetworkError(err)) throw err;
       console.warn('[Gnotes API] Falha no delete remoto, removendo localmente:', err);
       isBackendOffline = true;
       const list = getLocalNotes().filter(n => n.id !== id);

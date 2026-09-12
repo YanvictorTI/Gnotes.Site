@@ -1,23 +1,27 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { 
-  WifiOff 
-} from 'lucide-react';
+import { LogOut, ShieldCheck, Mail, Lock } from 'lucide-react';
 import { Note, NoteStatus, normalizeStatus, COLUMNS } from './types/note';
-import { notesApi, getBaseUrl } from './services/api';
+import { notesApi, getAccessToken, clearAuth, authApi } from './services/api';
 import { Header } from './components/Header';
 import { MetricsBar } from './components/MetricsBar';
 import { KanbanBoard } from './components/KanbanBoard';
 import { NoteModal } from './components/NoteModal';
 import { DeleteModal } from './components/DeleteModal';
-import { ApiSettingsModal } from './components/ApiSettingsModal';
 import { ToastContainer, ToastMessage } from './components/Toast';
+import { GnotesLogo } from './components/GnotesLogo';
 
 export const App: React.FC = () => {
   const [notes, setNotes] = useState<Note[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isOffline, setIsOffline] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilter, setSelectedFilter] = useState<NoteStatus | 'all'>('all');
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authConfirmPassword, setAuthConfirmPassword] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
 
   // Modals state
   const [isNoteModalOpen, setIsNoteModalOpen] = useState(false);
@@ -28,7 +32,6 @@ export const App: React.FC = () => {
   const [deletingNote, setDeletingNote] = useState<Note | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
 
   // Toast notifications
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -46,33 +49,86 @@ export const App: React.FC = () => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Fetch all notes
+  const handleLogout = useCallback(() => {
+    clearAuth();
+    setIsAuthenticated(false);
+    setNotes([]);
+    setIsLoading(false);
+    setAuthError(null);
+    showToast('info', 'Sessão encerrada', 'Você saiu da aplicação.');
+  }, [showToast]);
+
   const fetchNotes = useCallback(async (quiet = false) => {
+    if (!getAccessToken()) {
+      setNotes([]);
+      setIsLoading(false);
+      setIsAuthenticated(false);
+      return;
+    }
+
     if (!quiet) setIsLoading(true);
     try {
       const result = await notesApi.getAll();
       setNotes(result.data);
-      setIsOffline(result.isOffline);
+      setIsAuthenticated(true);
     } catch (err: any) {
-      setIsOffline(true);
+      if (err?.message?.includes('Sessão expirada')) {
+        handleLogout();
+        setAuthError('Sua sessão expirou. Faça login novamente.');
+        return;
+      }
+
       showToast('error', 'Falha ao carregar notas', err?.message);
     } finally {
       if (!quiet) setIsLoading(false);
     }
-  }, [showToast]);
+  }, [handleLogout, showToast]);
 
   useEffect(() => {
-    fetchNotes();
+    if (Boolean(getAccessToken())) {
+      fetchNotes();
+      return;
+    }
+
+    setNotes([]);
+    setIsLoading(false);
   }, [fetchNotes]);
 
-  // Periodic connection probe
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      const isOk = await notesApi.checkConnection();
-      setIsOffline(!isOk);
-    }, 15000);
-    return () => clearInterval(interval);
-  }, []);
+  const handleAuthSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setAuthError(null);
+
+    if (authMode === 'register' && authPassword !== authConfirmPassword) {
+      setAuthError('As senhas não conferem.');
+      return;
+    }
+
+    setIsSubmittingAuth(true);
+
+    try {
+      if (authMode === 'register') {
+        await authApi.register(authEmail.trim(), authPassword);
+        await authApi.login(authEmail.trim(), authPassword);
+        setAuthPassword('');
+        setAuthConfirmPassword('');
+        await fetchNotes();
+        showToast('success', 'Cadastro realizado', 'Conta criada com sucesso. Você já está conectado.');
+        return;
+      }
+
+      await authApi.login(authEmail.trim(), authPassword);
+      setAuthPassword('');
+      setAuthConfirmPassword('');
+      setAuthError(null);
+      await fetchNotes();
+      showToast('success', 'Login realizado', 'Bem-vindo ao Gnotes.');
+    } catch (err: any) {
+      setAuthError(err?.message || 'Não foi possível concluir a autenticação.');
+      showToast('error', 'Autenticação falhou', err?.message);
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  };
 
   // Filter notes by search query and optional status filter
   const filteredNotes = useMemo(() => {
@@ -93,7 +149,6 @@ export const App: React.FC = () => {
     return list;
   }, [notes, searchQuery, selectedFilter]);
 
-  // Handlers for modal actions
   const handleOpenCreateNote = (status: NoteStatus = NoteStatus.Todo) => {
     setEditingNote(null);
     setDefaultStatusForNew(status);
@@ -108,7 +163,6 @@ export const App: React.FC = () => {
 
   const handleSaveNote = async (payload: { title: string; description?: string; status: NoteStatus }) => {
     if (editingNote) {
-      // Update note
       const updated = await notesApi.update(editingNote.id, {
         title: payload.title,
         description: payload.description,
@@ -118,7 +172,6 @@ export const App: React.FC = () => {
       setNotes((prev) => prev.map((n) => (n.id === editingNote.id ? updated : n)));
       showToast('success', 'Nota atualizada!', `"${payload.title}" salva com sucesso.`);
     } else {
-      // Create new note
       const created = await notesApi.create({
         title: payload.title,
         description: payload.description,
@@ -151,80 +204,168 @@ export const App: React.FC = () => {
     }
   };
 
-  // Move note status (Kanban column shift or drag & drop)
   const handleMoveNoteStatus = async (note: Note, newStatus: NoteStatus) => {
-    // Optimistic UI update
-    setNotes((prev) =>
-      prev.map((n) => (n.id === note.id ? { ...n, status: newStatus, updatedAtUtc: new Date().toISOString() } : n))
-    );
+    const previousNote = note;
+    const optimisticNote = {
+      ...note,
+      status: newStatus,
+      updatedAtUtc: new Date().toISOString()
+    };
+
+    setNotes((prev) => prev.map((current) => (current.id === note.id ? optimisticNote : current)));
 
     try {
-      const updated = await notesApi.updateStatus(note.id, note, newStatus);
+      const updated = await notesApi.updateStatus(note, newStatus);
       setNotes((prev) => prev.map((n) => (n.id === note.id ? updated : n)));
-      
+
       const targetColumn = COLUMNS.find((c) => c.id === newStatus);
       showToast('info', 'Status atualizado', `Movido para "${targetColumn?.title || 'nova coluna'}"`);
     } catch (err: any) {
-      // Rollback on failure
-      fetchNotes(true);
+      setNotes((prev) => prev.map((current) => (current.id === previousNote.id ? previousNote : current)));
       showToast('error', 'Erro ao atualizar status', err?.message);
     }
   };
 
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#070b12] text-slate-100 flex items-center justify-center p-4">
+        <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl shadow-slate-950/80 backdrop-blur-sm">
+          <div className="flex items-center justify-between mb-6">
+            <GnotesLogo />
+
+          </div>
+
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <div className="flex rounded-xl border border-slate-800 bg-slate-950/60 p-1">
+              <button
+                type="button"
+                onClick={() => setAuthMode('login')}
+                className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${authMode === 'login' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white'}`}
+              >
+                Entrar
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuthMode('register')}
+                className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${authMode === 'register' ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white'}`}
+              >
+                Cadastrar
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <label className="block text-xs font-medium text-slate-300">
+                E-mail
+                <div className="mt-1.5 relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input
+                    type="email"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="seu@email.com"
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950/80 pl-10 pr-3 py-2.5 text-sm text-white placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-600/40"
+                  />
+                </div>
+              </label>
+
+              <label className="block text-xs font-medium text-slate-300">
+                Senha
+                <div className="mt-1.5 relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input
+                    type="password"
+                    required
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder="********"
+                    className="w-full rounded-xl border border-slate-700 bg-slate-950/80 pl-10 pr-3 py-2.5 text-sm text-white placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-600/40"
+                  />
+                </div>
+              </label>
+
+              {authMode === 'register' && (
+                <label className="block text-xs font-medium text-slate-300">
+                  Confirmar senha
+                  <div className="mt-1.5 relative">
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="password"
+                      required
+                      value={authConfirmPassword}
+                      onChange={(e) => setAuthConfirmPassword(e.target.value)}
+                      placeholder="********"
+                      className="w-full rounded-xl border border-slate-700 bg-slate-950/80 pl-10 pr-3 py-2.5 text-sm text-white placeholder-slate-400 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-600/40"
+                    />
+                  </div>
+                </label>
+              )}
+            </div>
+
+            {authError && (
+              <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                {authError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={
+                isSubmittingAuth ||
+                !authEmail.trim() ||
+                !authPassword.trim() ||
+                (authMode === 'register' && !authConfirmPassword.trim())
+              }
+              className="w-full rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-600/30 transition hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSubmittingAuth ? (authMode === 'login' ? 'Entrando...' : 'Cadastrando...') : authMode === 'login' ? 'Entrar' : 'Cadastrar'}
+            </button>
+          </form>
+
+          <div className="mt-5 flex items-center justify-between border-t border-slate-800 pt-4 text-[11px] text-slate-400">
+            <span className="flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Seus dados protegidos</span>
+          </div>
+        </div>
+
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#070b12] text-slate-100 flex flex-col selection:bg-indigo-500 selection:text-white">
-      {/* Top Header */}
       <Header
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onOpenNewNote={() => handleOpenCreateNote(NoteStatus.Todo)}
         onRefresh={() => fetchNotes()}
         isLoading={isLoading}
-        isOffline={isOffline}
-        onOpenSettings={() => setIsSettingsModalOpen(true)}
       />
 
-      {/* Main Content */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6 sm:space-y-8">
-        
-        {/* Offline / Backend notice banner if disconnected */}
-        {isOffline && (
-          <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-amber-200">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-xl bg-amber-500/20 text-amber-400">
-                <WifiOff className="w-5 h-5" />
-              </div>
-              <div>
-                <strong className="font-semibold block text-amber-100">Backend Gnotes (.NET API) desconectado</strong>
-                <span>
-                  O site está funcionando em modo local sincronizado. Inicie o projeto <code className="text-amber-300">Gnotes</code> em <code className="text-amber-300">{getBaseUrl()}</code> para persistência no banco SQL Server.
-                </span>
-              </div>
-            </div>
-            <button
-              onClick={() => setIsSettingsModalOpen(true)}
-              className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-100 font-semibold transition-colors flex-shrink-0"
-            >
-              Configurar Conexão
-            </button>
-          </div>
-        )}
+      <main className="flex-1 max-w-[1600px] w-full mx-auto px-4 sm:px-6 lg:px-10 py-5 sm:py-6 space-y-5 sm:space-y-6">
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-900/80 px-3 py-2 text-xs font-medium text-slate-200 hover:border-slate-600 hover:text-white"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Sair
+          </button>
+        </div>
 
-        {/* Dashboard Metrics */}
         <MetricsBar
           notes={notes}
           selectedFilter={selectedFilter}
           onSelectFilter={setSelectedFilter}
         />
 
-        {/* Kanban Board Columns: A Fazer | Em Andamento | Finalizado */}
         {isLoading ? (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="h-96 rounded-3xl bg-slate-900/40 border border-slate-800 animate-pulse p-6 space-y-4">
+              <div key={i} className="h-96 rounded-2xl bg-slate-900/40 border border-slate-800 animate-pulse p-6 space-y-4">
                 <div className="h-6 w-32 bg-slate-800 rounded-lg" />
-                <div className="h-28 bg-slate-800/60 rounded-2xl" />
-                <div className="h-28 bg-slate-800/60 rounded-2xl" />
+                <div className="h-28 bg-slate-800/60 rounded-xl" />
+                <div className="h-28 bg-slate-800/60 rounded-xl" />
               </div>
             ))}
           </div>
@@ -237,29 +378,18 @@ export const App: React.FC = () => {
             onQuickAdd={(status) => handleOpenCreateNote(status)}
           />
         )}
-
       </main>
 
-      {/* Footer */}
       <footer className="border-t border-slate-900 py-6 text-center text-xs text-slate-400">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-10 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className="font-bold text-slate-300">Gnotes Site</span>
             <span>&bull;</span>
-            <span>API .NET Core 10 + React Kanban Board</span>
-          </div>
-          <div className="flex items-center gap-4 text-slate-400">
-            <button 
-              onClick={() => setIsSettingsModalOpen(true)}
-              className="hover:text-slate-200 transition-colors"
-            >
-              API Swagger & Configurações
-            </button>
+            <span>Organize suas tarefas com clareza</span>
           </div>
         </div>
       </footer>
 
-      {/* Modals */}
       <NoteModal
         isOpen={isNoteModalOpen}
         onClose={() => setIsNoteModalOpen(false)}
@@ -270,22 +400,12 @@ export const App: React.FC = () => {
 
       <DeleteModal
         isOpen={isDeleteModalOpen}
-        note={deletingNote}
-        onClose={() => {
-          setIsDeleteModalOpen(false);
-          setDeletingNote(null);
-        }}
+        onClose={() => setIsDeleteModalOpen(false)}
         onConfirm={handleConfirmDelete}
         isDeleting={isDeleting}
+        note={deletingNote}
       />
 
-      <ApiSettingsModal
-        isOpen={isSettingsModalOpen}
-        onClose={() => setIsSettingsModalOpen(false)}
-        onConnectionChange={() => fetchNotes(true)}
-      />
-
-      {/* Toast notifications */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

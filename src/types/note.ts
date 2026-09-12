@@ -1,15 +1,18 @@
 export enum NoteStatus {
   Todo = 0,
   InProgress = 1,
-  Done = 2
+  Done = 2,
+  Waiting = 3
 }
 
-export type NoteStatusType = NoteStatus | 'Todo' | 'InProgress' | 'Done' | 0 | 1 | 2;
+export type NoteStatusType = NoteStatus | 'Todo' | 'InProgress' | 'Done' | 'Waiting' | 0 | 1 | 2 | 3;
 
 export interface Note {
   id: string;
   title: string;
   description?: string | null;
+  imageDataUrl?: string | null;
+  imagePosition?: number | null;
   status: NoteStatusType;
   createdAtUtc: string;
   updatedAtUtc?: string | null;
@@ -18,12 +21,16 @@ export interface Note {
 export interface CreateNoteRequest {
   title: string;
   description?: string | null;
+  imageDataUrl?: string | null;
+  imagePosition?: number | null;
   status?: NoteStatusType;
 }
 
 export interface UpdateNoteRequest {
   title: string;
   description?: string | null;
+  imageDataUrl?: string | null;
+  imagePosition?: number | null;
   status: NoteStatusType;
 }
 
@@ -33,7 +40,7 @@ export interface UpdateStatusRequest {
 
 export interface ColumnDefinition {
   id: NoteStatus;
-  key: 'Todo' | 'InProgress' | 'Done';
+  key: 'Todo' | 'InProgress' | 'Done' | 'Waiting';
   title: string;
   description: string;
   badgeColor: string;
@@ -67,6 +74,17 @@ export const COLUMNS: ColumnDefinition[] = [
     iconName: 'Clock'
   },
   {
+    id: NoteStatus.Waiting,
+    key: 'Waiting',
+    title: 'Em Espera',
+    description: 'Aguardando retorno ou dependência',
+    badgeColor: 'bg-sky-500/15 text-sky-400 border-sky-500/30',
+    borderColor: 'border-sky-500/30 hover:border-sky-500/60',
+    bgColor: 'bg-sky-950/20',
+    accentColor: 'sky',
+    iconName: 'PauseCircle'
+  },
+  {
     id: NoteStatus.Done,
     key: 'Done',
     title: 'Finalizado',
@@ -94,6 +112,9 @@ export function normalizeStatus(status: NoteStatusType): NoteStatus {
       case 'done':
       case '2':
         return NoteStatus.Done;
+      case 'waiting':
+      case '3':
+        return NoteStatus.Waiting;
       default:
         return NoteStatus.Todo;
     }
