@@ -1,12 +1,12 @@
 import { Note, CreateNoteRequest, UpdateNoteRequest, NoteStatus, normalizeStatus } from '../types/note';
+import { appConfig } from '../config';
 
-const DEFAULT_API_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5098';
 const STORAGE_KEY_API_URL = 'gnotes_api_url';
 const STORAGE_KEY_LOCAL_NOTES = 'gnotes_fallback_notes';
 const STORAGE_KEY_AUTH_TOKEN = 'gnotes_auth_token';
 
 export function getBaseUrl(): string {
-  return localStorage.getItem(STORAGE_KEY_API_URL) || DEFAULT_API_URL;
+  return localStorage.getItem(STORAGE_KEY_API_URL) || appConfig.apiBaseUrl;
 }
 
 export function setBaseUrl(url: string): void {
